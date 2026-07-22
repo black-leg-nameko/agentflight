@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentflight.dev/schemas/v1/event.schema.json",
+  "title": "AgentFlight Event",
+  "type": "object",
+  "required": ["schema_version", "run_id", "sequence", "timestamp", "actor", "event_type", "payload"],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "run_id": { "type": "string", "pattern": "^run_[0-9a-f]+$" },
+    "sequence": { "type": "integer", "minimum": 1 },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "span_id": { "type": ["string", "null"] },
+    "actor": {
+      "type": "object",
+      "required": ["type", "name"],
+      "properties": { "type": { "type": "string" }, "name": { "type": "string" } },
+      "additionalProperties": true
+    },
+    "event_type": { "type": "string", "pattern": "^[a-z][a-z0-9_.-]+$" },
+    "payload": {},
+    "artifact_refs": { "type": "array", "items": { "type": "string" } }
+  },
+  "additionalProperties": true
+}

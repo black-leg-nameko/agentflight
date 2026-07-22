@@ -1,0 +1,6 @@
+/target/
+/.agentflight/
+/out/
+*.afrun
+# Source product documents can contain author metadata and are not release artifacts.
+*.docx

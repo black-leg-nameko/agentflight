@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentflight.dev/schemas/v1/run-manifest.schema.json",
+  "title": "AgentFlight Run Manifest",
+  "type": "object",
+  "required": ["schema_version", "run_id", "project", "command", "cwd", "started_at", "status", "event_count", "redaction_count"],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "run_id": { "type": "string" },
+    "project": { "type": "string" },
+    "command": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+    "cwd": { "type": "string" },
+    "started_at": { "type": "string", "format": "date-time" },
+    "ended_at": { "type": ["string", "null"], "format": "date-time" },
+    "status": { "enum": ["running", "succeeded", "failed", "interrupted"] },
+    "exit_code": { "type": ["integer", "null"] },
+    "event_count": { "type": "integer", "minimum": 0 },
+    "redaction_count": { "type": "integer", "minimum": 0 }
+  },
+  "additionalProperties": true
+}

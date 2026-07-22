@@ -1,0 +1,14 @@
+[package]
+name = "agentflight-bundle"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+blake3.workspace = true
+walkdir.workspace = true
+zip.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
