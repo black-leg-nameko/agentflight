@@ -1,7 +1,11 @@
-use agentflight_core::RunManifest;
+use agentflight_core::{Event, RunManifest};
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, params};
-use std::path::Path;
+use std::{
+    fs,
+    io::Write,
+    path::{Path, PathBuf},
+};
 
 const MIGRATION_V1: &str = include_str!("../migrations/001_initial.sql");
 
@@ -92,6 +96,108 @@ fn status_name(manifest: &RunManifest) -> &'static str {
     }
 }
 
+pub struct ArtifactStore {
+    root: PathBuf,
+}
+
+impl ArtifactStore {
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        Self { root: root.into() }
+    }
+
+    pub fn put(&self, bytes: &[u8]) -> Result<String> {
+        let digest = blake3::hash(bytes).to_hex().to_string();
+        let destination = self.root.join(&digest[..2]).join(&digest[2..]);
+        if !destination.exists() {
+            fs::create_dir_all(destination.parent().unwrap())?;
+            let temporary = destination.with_extension(format!("tmp-{}", std::process::id()));
+            fs::write(&temporary, bytes)?;
+            match fs::rename(&temporary, &destination) {
+                Ok(()) => {}
+                Err(_) if destination.exists() => {
+                    let _ = fs::remove_file(temporary);
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(format!("blake3:{digest}"))
+    }
+
+    pub fn read(&self, reference: &str) -> Result<Vec<u8>> {
+        let digest = reference
+            .strip_prefix("blake3:")
+            .context("artifact reference must start with blake3:")?;
+        if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            anyhow::bail!("invalid artifact digest");
+        }
+        let bytes = fs::read(self.root.join(&digest[..2]).join(&digest[2..]))?;
+        if blake3::hash(&bytes).to_hex().as_str() != digest {
+            anyhow::bail!("artifact checksum mismatch");
+        }
+        Ok(bytes)
+    }
+
+    pub fn materialize(&self, reference: &str, destination: &Path) -> Result<()> {
+        let bytes = self.read(reference)?;
+        fs::create_dir_all(
+            destination
+                .parent()
+                .context("artifact destination has no parent")?,
+        )?;
+        fs::write(destination, bytes)?;
+        Ok(())
+    }
+}
+
+pub struct RunJournal {
+    file: fs::File,
+}
+
+impl RunJournal {
+    pub fn open(path: &Path) -> Result<Self> {
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .read(true)
+            .open(path)?;
+        Ok(Self { file })
+    }
+
+    pub fn append(&mut self, event: &Event) -> Result<()> {
+        serde_json::to_writer(&mut self.file, event)?;
+        writeln!(self.file)?;
+        self.file.sync_data()?;
+        Ok(())
+    }
+
+    pub fn checkpoint(&mut self, sequence: u64) -> Result<()> {
+        writeln!(self.file, "{{\"checkpoint\":{sequence}}}")?;
+        self.file.sync_all()?;
+        Ok(())
+    }
+
+    pub fn recover(journal_path: &Path, events_path: &Path) -> Result<usize> {
+        let journal = fs::read_to_string(journal_path)?;
+        let events = journal
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .filter_map(|line| serde_json::from_str::<Event>(line).ok())
+            .collect::<Vec<_>>();
+        if events.is_empty() {
+            anyhow::bail!("journal contains no recoverable events");
+        }
+        let temporary = events_path.with_extension(format!("recover-{}", std::process::id()));
+        let mut file = fs::File::create(&temporary)?;
+        for event in &events {
+            serde_json::to_writer(&mut file, event)?;
+            writeln!(file)?;
+        }
+        file.sync_all()?;
+        fs::rename(temporary, events_path)?;
+        Ok(events.len())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,6 +232,38 @@ mod tests {
         let connection = Connection::open(path)?;
         let mode: String = connection.pragma_query_value(None, "journal_mode", |row| row.get(0))?;
         assert_eq!(mode.to_ascii_lowercase(), "wal");
+        Ok(())
+    }
+
+    #[test]
+    fn deduplicates_and_verifies_artifacts() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let store = ArtifactStore::new(temp.path());
+        let first = store.put(b"terminal output")?;
+        let second = store.put(b"terminal output")?;
+        assert_eq!(first, second);
+        assert_eq!(store.read(&first)?, b"terminal output");
+        Ok(())
+    }
+
+    #[test]
+    fn recovers_events_from_the_journal() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let journal_path = temp.path().join("journal.log");
+        let events_path = temp.path().join("events.ndjson");
+        let mut journal = RunJournal::open(&journal_path)?;
+        journal.append(&Event::new(
+            "run_test",
+            1,
+            "process.start",
+            serde_json::json!({}),
+        ))?;
+        journal.checkpoint(1)?;
+        fs::write(&events_path, b"truncated")?;
+
+        assert_eq!(RunJournal::recover(&journal_path, &events_path)?, 1);
+        let recovered = agentflight_core::read_events(&events_path)?;
+        assert_eq!(recovered[0].sequence, 1);
         Ok(())
     }
 }

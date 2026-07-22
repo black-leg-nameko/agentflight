@@ -1,19 +1,17 @@
 use agentflight_bundle::{export_run, import_run};
+use agentflight_capture_process::run_pty;
 use agentflight_core::{
     Event, Redactor, RunManifest, RunStatus, append_event, data_home, file_change_events,
     read_events, redact_json, snapshot, write_json,
 };
-use agentflight_storage::MetadataStore;
+use agentflight_storage::{ArtifactStore, MetadataStore, RunJournal};
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{
     fs,
-    io::{BufRead, BufReader, Read},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
-    thread,
 };
 
 #[derive(Parser)]
@@ -169,7 +167,10 @@ fn load_config(cwd: &Path) -> Result<Config> {
 fn record(command: Vec<String>) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let config = load_config(&cwd)?;
-    let mut manifest = RunManifest::new(config.project.name, command.clone(), &cwd);
+    let redactor = Redactor::standard();
+    let (redacted_command, initial_redactions) = redact_arguments(&redactor, &command);
+    let mut manifest = RunManifest::new(config.project.name, redacted_command, &cwd);
+    manifest.redaction_count = initial_redactions;
     let run_dir = data_home()?
         .join("projects")
         .join(project_id(&cwd))
@@ -180,57 +181,59 @@ fn record(command: Vec<String>) -> Result<()> {
     project_store()?.upsert_run(&manifest)?;
     let before = snapshot(&cwd)?;
     let events_path = run_dir.join("events.ndjson");
-    let redactor = Redactor::standard();
+    let mut journal = RunJournal::open(&run_dir.join("journal.log"))?;
+    let artifacts = ArtifactStore::new(project_root()?.join("blobs"));
     let mut sequence = 1;
     let (payload, count) = redact_json(&redactor, json!({"command": command, "cwd": cwd}));
     manifest.redaction_count += count;
-    append_event(
+    persist_event(
+        &mut journal,
         &events_path,
         &Event::new(&manifest.run_id, sequence, "process.start", payload),
     )?;
     sequence += 1;
-    let mut child = Command::new(&command[0])
-        .args(&command[1..])
-        .current_dir(&cwd)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .with_context(|| format!("start {}", command[0]))?;
-    let stdout = child.stdout.take().unwrap();
-    let stderr = child.stderr.take().unwrap();
-    let out_handle = thread::spawn(move || tee(stdout, false));
-    let err_handle = thread::spawn(move || tee(stderr, true));
-    let status = child.wait()?;
-    let stdout = out_handle.join().unwrap()?;
-    let stderr = err_handle.join().unwrap()?;
-    for (kind, data) in [("process.stdout", stdout), ("process.stderr", stderr)] {
-        if !data.is_empty() {
-            let (data, count) = redactor.redact(&data);
-            manifest.redaction_count += count;
-            append_event(
-                &events_path,
-                &Event::new(&manifest.run_id, sequence, kind, json!({"text": data})),
-            )?;
-            sequence += 1;
-        }
+    let capture = run_pty(&command, &cwd)?;
+    if !capture.output.is_empty() {
+        let terminal_output = String::from_utf8_lossy(&capture.output);
+        let (redacted, count) = redactor.redact(&terminal_output);
+        manifest.redaction_count += count;
+        let artifact = artifacts.put(redacted.as_bytes())?;
+        let digest = artifact.strip_prefix("blake3:").unwrap();
+        artifacts.materialize(&artifact, &run_dir.join("artifacts").join(digest))?;
+        let mut event = Event::new(
+            &manifest.run_id,
+            sequence,
+            "process.output",
+            json!({
+                "stream": "pty",
+                "encoding": "utf-8",
+                "byte_count": redacted.len(),
+                "preview": preview(&redacted, 4096)
+            }),
+        );
+        event.artifact_refs.push(artifact);
+        persist_event(&mut journal, &events_path, &event)?;
+        sequence += 1;
     }
     let after = snapshot(&cwd)?;
     for event in file_change_events(&manifest.run_id, sequence, &before, &after) {
-        append_event(&events_path, &event)?;
+        persist_event(&mut journal, &events_path, &event)?;
         sequence = event.sequence + 1;
     }
-    append_event(
+    persist_event(
+        &mut journal,
         &events_path,
         &Event::new(
             &manifest.run_id,
             sequence,
             "process.exit",
-            json!({"exit_code": status.code()}),
+            json!({"exit_code": capture.exit_code}),
         ),
     )?;
+    journal.checkpoint(sequence)?;
     manifest.event_count = sequence;
-    manifest.exit_code = status.code();
-    manifest.status = if status.success() {
+    manifest.exit_code = Some(capture.exit_code as i32);
+    manifest.status = if capture.success {
         RunStatus::Succeeded
     } else {
         RunStatus::Failed
@@ -243,25 +246,32 @@ fn record(command: Vec<String>) -> Result<()> {
         manifest.run_id, manifest.status, manifest.event_count
     );
     println!("Inspect: agentflight inspect {} --events", manifest.run_id);
-    if !status.success() {
-        std::process::exit(status.code().unwrap_or(1));
+    if !capture.success {
+        std::process::exit(capture.exit_code.min(255) as i32);
     }
     Ok(())
 }
 
-fn tee<R: Read>(reader: R, error: bool) -> Result<String> {
-    let mut collected = String::new();
-    for line in BufReader::new(reader).lines() {
-        let line = line?;
-        if error {
-            eprintln!("{line}");
-        } else {
-            println!("{line}");
-        }
-        collected.push_str(&line);
-        collected.push('\n');
-    }
-    Ok(collected)
+fn persist_event(journal: &mut RunJournal, events_path: &Path, event: &Event) -> Result<()> {
+    journal.append(event)?;
+    append_event(events_path, event)
+}
+
+fn preview(text: &str, max_chars: usize) -> String {
+    text.chars().take(max_chars).collect()
+}
+
+fn redact_arguments(redactor: &Redactor, arguments: &[String]) -> (Vec<String>, u64) {
+    let mut total = 0;
+    let arguments = arguments
+        .iter()
+        .map(|argument| {
+            let (redacted, count) = redactor.redact(argument);
+            total += count;
+            redacted
+        })
+        .collect();
+    (arguments, total)
 }
 
 fn list() -> Result<()> {
@@ -296,12 +306,28 @@ fn inspect(run_id: &str, show_events: bool) -> Result<()> {
         manifest.redaction_count
     );
     if show_events {
-        for e in read_events(&dir.join("events.ndjson"))? {
+        let events_path = dir.join("events.ndjson");
+        let events = match read_events(&events_path) {
+            Ok(events) => events,
+            Err(error) if dir.join("journal.log").exists() => {
+                let recovered = RunJournal::recover(&dir.join("journal.log"), &events_path)?;
+                eprintln!("Recovered {recovered} events from journal after: {error}");
+                read_events(&events_path)?
+            }
+            Err(error) => return Err(error),
+        };
+        for event in events {
+            let artifacts = if event.artifact_refs.is_empty() {
+                String::new()
+            } else {
+                format!(" artifacts={}", event.artifact_refs.join(","))
+            };
             println!(
-                "{:>5}  {:<20} {}",
-                e.sequence,
-                e.event_type,
-                serde_json::to_string(&e.payload)?
+                "{:>5}  {:<20} {}{}",
+                event.sequence,
+                event.event_type,
+                serde_json::to_string(&event.payload)?,
+                artifacts
             );
         }
     }
@@ -443,20 +469,14 @@ fn project_id(cwd: &Path) -> String {
     hash[..16].to_string()
 }
 fn project_runs() -> Result<PathBuf> {
+    Ok(project_root()?.join("runs"))
+}
+fn project_root() -> Result<PathBuf> {
     let cwd = std::env::current_dir()?;
-    Ok(data_home()?
-        .join("projects")
-        .join(project_id(&cwd))
-        .join("runs"))
+    Ok(data_home()?.join("projects").join(project_id(&cwd)))
 }
 fn project_store() -> Result<MetadataStore> {
-    let cwd = std::env::current_dir()?;
-    MetadataStore::open(
-        &data_home()?
-            .join("projects")
-            .join(project_id(&cwd))
-            .join("metadata.db"),
-    )
+    MetadataStore::open(&project_root()?.join("metadata.db"))
 }
 fn resolve_run(run_id: &str) -> Result<PathBuf> {
     let runs = project_runs()?;
@@ -489,5 +509,15 @@ mod tests {
             &event,
             Some(&json!({"event_type":"file.change","payload.change":"deleted"}))
         ));
+    }
+
+    #[test]
+    fn redacts_secrets_from_persisted_command_arguments() {
+        let (arguments, count) = redact_arguments(
+            &Redactor::standard(),
+            &["--token=sk-abcdefghijklmnopqrstuv".into()],
+        );
+        assert_eq!(count, 1);
+        assert!(!arguments[0].contains("abcdefghijklmnopqrstuv"));
     }
 }
