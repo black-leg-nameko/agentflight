@@ -7,4 +7,3 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 portable-pty.workspace = true
-
