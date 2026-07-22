@@ -17,6 +17,14 @@ pub struct CaptureResult {
 /// output to the parent process. stdout and stderr are intentionally combined,
 /// matching terminal ordering as observed by the user.
 pub fn run_pty(command: &[String], cwd: &Path) -> Result<CaptureResult> {
+    run_pty_with_env(command, cwd, &[])
+}
+
+pub fn run_pty_with_env(
+    command: &[String],
+    cwd: &Path,
+    environment: &[(&str, &Path)],
+) -> Result<CaptureResult> {
     if command.is_empty() {
         bail!("command cannot be empty");
     }
@@ -29,6 +37,9 @@ pub fn run_pty(command: &[String], cwd: &Path) -> Result<CaptureResult> {
     let mut builder = CommandBuilder::new(&command[0]);
     builder.args(&command[1..]);
     builder.cwd(cwd);
+    for (name, value) in environment {
+        builder.env(name, value);
+    }
 
     let mut child = pair
         .slave

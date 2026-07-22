@@ -32,7 +32,7 @@ pub fn export_run(run_dir: &Path, output: &Path) -> Result<()> {
             .strip_prefix(run_dir)?
             .to_string_lossy()
             .replace('\\', "/");
-        if name == "checksums.txt" || name == "journal.log" {
+        if name == "checksums.txt" || name == "journal.log" || name == "mcp-capture.ndjson" {
             continue;
         }
         let data = fs::read(entry.path())?;

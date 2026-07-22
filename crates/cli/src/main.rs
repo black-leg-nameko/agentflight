@@ -1,5 +1,6 @@
 use agentflight_bundle::{export_run, import_run};
-use agentflight_capture_process::run_pty;
+use agentflight_capture_mcp::{CAPTURE_PATH_ENV, normalize, proxy, read_capture};
+use agentflight_capture_process::run_pty_with_env;
 use agentflight_core::{
     Event, Redactor, RunManifest, RunStatus, append_event, data_home, file_change_events,
     read_events, redact_json, snapshot, write_json,
@@ -53,6 +54,11 @@ enum Commands {
     },
     Import {
         file: PathBuf,
+    },
+    /// Proxy a stdio MCP server and capture JSON-RPC when run under `record`.
+    McpProxy {
+        #[arg(required = true, last = true)]
+        command: Vec<String>,
     },
     Doctor,
 }
@@ -117,6 +123,7 @@ fn run() -> Result<()> {
         Commands::Test { path } => test_cases(path.as_deref()),
         Commands::Export { run_id, out } => export(&run_id, out.as_deref()),
         Commands::Import { file } => import(&file),
+        Commands::McpProxy { command } => mcp_proxy(&command),
         Commands::Doctor => doctor(),
     }
 }
@@ -192,7 +199,12 @@ fn record(command: Vec<String>) -> Result<()> {
         &Event::new(&manifest.run_id, sequence, "process.start", payload),
     )?;
     sequence += 1;
-    let capture = run_pty(&command, &cwd)?;
+    let mcp_capture_path = run_dir.join("mcp-capture.ndjson");
+    let capture = run_pty_with_env(
+        &command,
+        &cwd,
+        &[(CAPTURE_PATH_ENV, mcp_capture_path.as_path())],
+    )?;
     if !capture.output.is_empty() {
         let terminal_output = String::from_utf8_lossy(&capture.output);
         let (redacted, count) = redactor.redact(&terminal_output);
@@ -214,6 +226,17 @@ fn record(command: Vec<String>) -> Result<()> {
         event.artifact_refs.push(artifact);
         persist_event(&mut journal, &events_path, &event)?;
         sequence += 1;
+    }
+    if mcp_capture_path.exists() {
+        let records = read_capture(&mcp_capture_path)?;
+        manifest.redaction_count += records
+            .iter()
+            .map(|record| record.redaction_count)
+            .sum::<u64>();
+        for event in normalize(&manifest.run_id, sequence, records) {
+            persist_event(&mut journal, &events_path, &event)?;
+            sequence = event.sequence + 1;
+        }
     }
     let after = snapshot(&cwd)?;
     for event in file_change_events(&manifest.run_id, sequence, &before, &after) {
@@ -444,6 +467,15 @@ fn import(file: &Path) -> Result<()> {
     fs::rename(temp, &dest)?;
     project_store()?.upsert_run(&manifest)?;
     println!("Imported {}", manifest.run_id);
+    Ok(())
+}
+
+fn mcp_proxy(command: &[String]) -> Result<()> {
+    let capture_path = std::env::var_os(CAPTURE_PATH_ENV).map(PathBuf::from);
+    let exit_code = proxy(command, capture_path.as_deref())?;
+    if exit_code != 0 {
+        std::process::exit(exit_code);
+    }
     Ok(())
 }
 
