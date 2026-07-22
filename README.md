@@ -8,6 +8,7 @@ This repository currently implements the Phase 0 vertical slice from the product
 - a Rust CLI with `init`, `record`, `list`, `inspect`, `promote`, `test`, `export`, `import`, and `doctor`;
 - pre-persistence redaction for common tokens and secret environment values;
 - checksum-verified, path-traversal-safe `.afrun` bundles;
+- SQLite WAL metadata storage with versioned migrations;
 - a deliberately faulty sample agent and a short local demo.
 
 ## Build
@@ -50,6 +51,6 @@ AgentFlight cannot guarantee complete secret detection or full sandboxing. Revie
 
 ## Project status
 
-Version 0.1 is an early implementation. PTY capture, SQLite storage, MCP proxying, the Timeline UI, mock replay, richer assertions, and semantic diff remain roadmap work.
+Version 0.1 is an early implementation. PTY capture, MCP proxying, the Timeline UI, mock replay, richer assertions, and semantic diff remain roadmap work.
 
 Licensed under Apache-2.0.

@@ -13,9 +13,10 @@ Each run is currently stored at:
 ~/.agentflight/projects/<project-hash>/runs/<run-id>/
   manifest.json
   events.ndjson
+~/.agentflight/projects/<project-hash>/metadata.db
 ```
 
-A later storage phase will replace directory scanning with SQLite WAL while preserving these public bundle structures.
+SQLite WAL indexes Run metadata and is managed by versioned SQL migrations. The per-Run files remain the journal and public bundle source, keeping exported formats independent from SQLite internals.
 
 ## Event ordering
 
