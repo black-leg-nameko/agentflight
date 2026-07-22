@@ -9,6 +9,9 @@ This repository currently implements the Phase 0 vertical slice from the product
 - pre-persistence redaction for common tokens and secret environment values;
 - checksum-verified, path-traversal-safe `.afrun` bundles;
 - SQLite WAL metadata storage with versioned migrations;
+- platform-native PTY capture with ordered terminal output;
+- append-only Run journals with Event-stream recovery;
+- BLAKE3 content-addressed terminal artifacts;
 - a deliberately faulty sample agent and a short local demo.
 
 ## Build
@@ -51,6 +54,6 @@ AgentFlight cannot guarantee complete secret detection or full sandboxing. Revie
 
 ## Project status
 
-Version 0.1 is an early implementation. PTY capture, MCP proxying, the Timeline UI, mock replay, richer assertions, and semantic diff remain roadmap work.
+Version 0.1 is an early implementation. MCP proxying, the Timeline UI, mock replay, richer assertions, and semantic diff remain roadmap work.
 
 Licensed under Apache-2.0.

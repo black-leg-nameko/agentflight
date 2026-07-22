@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 agentflight-core = { path = "../core" }
 anyhow.workspace = true
+blake3.workspace = true
 rusqlite.workspace = true
 serde_json.workspace = true
 
