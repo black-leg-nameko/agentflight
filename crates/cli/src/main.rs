@@ -3,6 +3,7 @@ use agentflight_core::{
     Event, Redactor, RunManifest, RunStatus, append_event, data_home, file_change_events,
     read_events, redact_json, snapshot, write_json,
 };
+use agentflight_storage::MetadataStore;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
@@ -176,6 +177,7 @@ fn record(command: Vec<String>) -> Result<()> {
         .join(&manifest.run_id);
     fs::create_dir_all(&run_dir)?;
     write_json(&run_dir.join("manifest.json"), &manifest)?;
+    project_store()?.upsert_run(&manifest)?;
     let before = snapshot(&cwd)?;
     let events_path = run_dir.join("events.ndjson");
     let redactor = Redactor::standard();
@@ -235,6 +237,7 @@ fn record(command: Vec<String>) -> Result<()> {
     };
     manifest.ended_at = Some(chrono::Utc::now());
     write_json(&run_dir.join("manifest.json"), &manifest)?;
+    project_store()?.upsert_run(&manifest)?;
     println!(
         "\nRecorded {} ({:?}, {} events)",
         manifest.run_id, manifest.status, manifest.event_count
@@ -262,17 +265,11 @@ fn tee<R: Read>(reader: R, error: bool) -> Result<String> {
 }
 
 fn list() -> Result<()> {
-    let runs = project_runs()?;
-    if !runs.exists() {
+    let manifests = project_store()?.list_runs(100)?;
+    if manifests.is_empty() {
         println!("No runs recorded.");
         return Ok(());
     }
-    let mut manifests = fs::read_dir(runs)?
-        .filter_map(Result::ok)
-        .filter_map(|e| fs::read(e.path().join("manifest.json")).ok())
-        .filter_map(|b| serde_json::from_slice::<RunManifest>(&b).ok())
-        .collect::<Vec<_>>();
-    manifests.sort_by_key(|m| std::cmp::Reverse(m.started_at));
     for m in manifests {
         println!(
             "{}  {:?}  exit={:?}  events={}  {}",
@@ -419,6 +416,7 @@ fn import(file: &Path) -> Result<()> {
     }
     fs::create_dir_all(dest.parent().unwrap())?;
     fs::rename(temp, &dest)?;
+    project_store()?.upsert_run(&manifest)?;
     println!("Imported {}", manifest.run_id);
     Ok(())
 }
@@ -450,6 +448,15 @@ fn project_runs() -> Result<PathBuf> {
         .join("projects")
         .join(project_id(&cwd))
         .join("runs"))
+}
+fn project_store() -> Result<MetadataStore> {
+    let cwd = std::env::current_dir()?;
+    MetadataStore::open(
+        &data_home()?
+            .join("projects")
+            .join(project_id(&cwd))
+            .join("metadata.db"),
+    )
 }
 fn resolve_run(run_id: &str) -> Result<PathBuf> {
     let runs = project_runs()?;
