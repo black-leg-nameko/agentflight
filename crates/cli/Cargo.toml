@@ -11,6 +11,7 @@ path = "src/main.rs"
 [dependencies]
 agentflight-bundle = { path = "../bundle" }
 agentflight-capture-process = { path = "../capture-process" }
+agentflight-capture-mcp = { path = "../capture-mcp" }
 agentflight-core = { path = "../core" }
 agentflight-storage = { path = "../storage" }
 anyhow.workspace = true

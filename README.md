@@ -12,6 +12,7 @@ This repository currently implements the Phase 0 vertical slice from the product
 - platform-native PTY capture with ordered terminal output;
 - append-only Run journals with Event-stream recovery;
 - BLAKE3 content-addressed terminal artifacts;
+- stdio MCP proxy with JSON-RPC Tool Call/Result normalization;
 - a deliberately faulty sample agent and a short local demo.
 
 ## Build
@@ -46,6 +47,8 @@ mkdir -p out
 agentflight export latest --out out/demo.afrun
 ```
 
+MCP clients can wrap a configured server with `agentflight mcp-proxy -- <server command>`. See [the MCP stdio capture guide](docs/architecture/mcp-stdio.md).
+
 ## Data and safety
 
 Recording excludes `.git`, `.agentflight`, `target`, `node_modules`, and existing `.afrun` files. This phase records file metadata and hashes, not file contents. Bundle import validates checksums, rejects absolute and parent-directory paths, and never executes bundle content.
@@ -54,6 +57,6 @@ AgentFlight cannot guarantee complete secret detection or full sandboxing. Revie
 
 ## Project status
 
-Version 0.1 is an early implementation. MCP proxying, the Timeline UI, mock replay, richer assertions, and semantic diff remain roadmap work.
+Version 0.1 is an early implementation. The Timeline UI, mock replay, richer assertions, and semantic diff remain roadmap work.
 
 Licensed under Apache-2.0.

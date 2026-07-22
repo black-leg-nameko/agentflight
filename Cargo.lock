@@ -20,6 +20,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "agentflight-capture-mcp"
+version = "0.1.0"
+dependencies = [
+ "agentflight-core",
+ "anyhow",
+ "chrono",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "agentflight-capture-process"
 version = "0.1.0"
 dependencies = [
@@ -32,6 +44,7 @@ name = "agentflight-cli"
 version = "0.1.0"
 dependencies = [
  "agentflight-bundle",
+ "agentflight-capture-mcp",
  "agentflight-capture-process",
  "agentflight-core",
  "agentflight-storage",
